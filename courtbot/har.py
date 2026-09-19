@@ -74,6 +74,7 @@ def parse(path: str | Path) -> list[Exchange]:
                 response_text=_content_text(resp.get("content")),
                 resource_type=str(entry.get("_resourceType", "")),
                 started_at=_started(entry),
+                error=str(entry.get("_error") or resp.get("_error") or ""),
             )
         )
     out.sort(key=lambda e: e.started_at)

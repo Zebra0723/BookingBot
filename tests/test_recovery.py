@@ -30,7 +30,7 @@ class StubClient:
     def prewarm(self):
         return True
 
-    def login(self, username, password):
+    def login(self, credentials):
         self.logins += 1
 
     def availability(self, target):
@@ -67,7 +67,7 @@ def config():
         targets=(Target((target.weekday() + 9) % 7, "t", (time(10, 0),)),),
         attempts=AttemptPolicy(retry_for_seconds=5, retry_interval_ms=50),
         base_url="https://api.example.com",
-        recipe_path=Path("r"), state_path=Path("s"),
+        recipe_path=Path("r"),
     )
 
 

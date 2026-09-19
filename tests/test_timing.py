@@ -107,3 +107,45 @@ def test_clock_sync_survives_an_unreachable_server_within_budget():
     assert c.synced is False
     assert c.offset == 0.0
     assert t.monotonic() - started < 5.0, "sync must not block past its budget"
+
+
+# --- the 9-day window straddling a clock change -----------------------------
+# Which zone applies is decided by the day the release happens, not the day
+# being booked. Four windows a year span a change, and anchoring on the wrong
+# end would fire an hour early or an hour late on each of them.
+
+@pytest.mark.parametrize(
+    "release_day,release_zone,target_zone,expected_utc_hour",
+    [
+        # Release in GMT, the court date lands after the spring change in BST.
+        (date(2026, 3, 20), "GMT", "BST", 8),
+        (date(2026, 3, 28), "GMT", "BST", 8),
+        # Release in BST, the court date lands after the autumn change in GMT.
+        (date(2026, 10, 16), "BST", "GMT", 7),
+        (date(2026, 10, 24), "BST", "GMT", 7),
+    ],
+)
+def test_release_follows_the_release_day_not_the_booked_day(
+    release_day, release_zone, target_zone, expected_utc_hour
+):
+    target = W.target_date_for(release_day)
+    instant = W.release_instant_for(target)
+
+    # The window really does straddle a change, or this test proves nothing.
+    booked_zone = datetime.combine(target, time(12, 0), tzinfo=LONDON).tzname()
+    assert booked_zone == target_zone
+    assert instant.astimezone(LONDON).tzname() == release_zone
+    assert booked_zone != release_zone
+
+    # 08:00 local on the release day, whatever the booked day is doing.
+    assert instant.astimezone(LONDON).hour == 8
+    assert instant.astimezone(LONDON).date() == release_day
+    assert instant.hour == expected_utc_hour
+
+
+def test_every_release_in_a_year_is_eight_local_on_its_own_release_day():
+    day = date(2026, 1, 1)
+    while day < date(2027, 1, 1):
+        local = W.release_instant_for(W.target_date_for(day)).astimezone(LONDON)
+        assert (local.date(), local.hour, local.minute) == (day, 8, 0), day
+        day += timedelta(days=1)

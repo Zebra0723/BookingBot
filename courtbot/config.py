@@ -29,7 +29,7 @@ WEEKDAYS = {
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$")
 
 # Keys that must never be committed to the config file.
-_FORBIDDEN_KEYS = {"password", "passwd", "secret", "token", "pin"}
+_FORBIDDEN_KEYS = {"password", "passwd", "secret", "token", "pin", "refresh_token"}
 
 
 class ConfigError(ValueError):
@@ -108,20 +108,39 @@ class Club:
 
 @dataclass(frozen=True)
 class Credentials:
-    username: str
-    password: str
+    """Whatever secrets the captured auth step turns out to need.
+
+    A phone app often never posts a password: it signs in once and then renews
+    a long-lived refresh token. Which of these is required is a property of the
+    recipe, not of the config, so nothing is demanded up front — the client
+    checks what the auth request actually asks for and names the missing
+    variable precisely.
+    """
+
+    username: str = ""
+    password: str = ""
+    refresh_token: str = ""
+    sources: dict[str, str] = field(default_factory=dict)
+
+    def as_values(self) -> dict[str, str]:
+        return {
+            "username": self.username,
+            "password": self.password,
+            "refresh_token": self.refresh_token,
+        }
+
+    def env_var_for(self, placeholder: str) -> str:
+        return self.sources.get(placeholder, placeholder.upper())
 
     @staticmethod
-    def from_env(user_var: str, pass_var: str) -> "Credentials":
-        user = os.environ.get(user_var, "").strip()
-        pwd = os.environ.get(pass_var, "")
-        if not user or not pwd:
-            raise ConfigError(
-                f"Missing credentials. Set {user_var} and {pass_var} in the "
-                f"environment (see README: 'Credentials'). They are never read "
-                f"from the config file."
-            )
-        return Credentials(user, pwd)
+    def from_env(user_var: str, pass_var: str, refresh_var: str) -> "Credentials":
+        return Credentials(
+            username=os.environ.get(user_var, "").strip(),
+            password=os.environ.get(pass_var, ""),
+            refresh_token=os.environ.get(refresh_var, "").strip(),
+            sources={"username": user_var, "password": pass_var,
+                     "refresh_token": refresh_var},
+        )
 
 
 @dataclass(frozen=True)
@@ -132,15 +151,17 @@ class Config:
     attempts: AttemptPolicy
     base_url: str
     recipe_path: Path
-    state_path: Path
     username_env: str = "DL_USERNAME"
     password_env: str = "DL_PASSWORD"
+    refresh_token_env: str = "DL_REFRESH_TOKEN"
     notify: bool = True
     dry_run: bool = False
     extras: dict = field(default_factory=dict)
 
     def credentials(self) -> Credentials:
-        return Credentials.from_env(self.username_env, self.password_env)
+        return Credentials.from_env(
+            self.username_env, self.password_env, self.refresh_token_env
+        )
 
     def target_for_weekday(self, weekday: int) -> Target | None:
         for t in self.targets:
@@ -246,9 +267,9 @@ def load(path: str | Path) -> Config:
         attempts=attempts,
         base_url=base_url,
         recipe_path=Path(raw.get("recipe_path", "captured/recipe.json")),
-        state_path=Path(raw.get("state_path", "captured/storage_state.json")),
         username_env=str(raw.get("username_env", "DL_USERNAME")),
         password_env=str(raw.get("password_env", "DL_PASSWORD")),
+        refresh_token_env=str(raw.get("refresh_token_env", "DL_REFRESH_TOKEN")),
         notify=bool(raw.get("notify", True)),
         dry_run=bool(raw.get("dry_run", False)),
         extras=raw.get("extras") or {},

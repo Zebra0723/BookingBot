@@ -3,7 +3,9 @@
 # Credentials are NOT stored here. Export them instead:
 #   export DL_USERNAME='you@example.com'
 #   export DL_PASSWORD='...'
-# The loader refuses to start if it finds a password in this file.
+# or, if the app signs in with a refresh token:
+#   source captured/secrets.env
+# The loader refuses to start if it finds a secret in this file.
 
 club:
   name: "Harbour Club Chelsea"
@@ -28,7 +30,11 @@ window:
   # IMPORTANT: verify this before relying on it. David Lloyd documents 7:30am
   # for some clubs and 8am for others, and Chelsea is not in the published
   # 7:30am list. Run `courtbot calibrate` once — it watches the boundary and
-  # tells you the real time to the second.
+  # tells you the real time to the second. Seconds are allowed: "07:30:15".
+  #
+  # This is LOCAL London time. Which of BST/GMT applies is decided by the day
+  # the release happens, not the day being booked — they differ four times a
+  # year, and the bot handles that.
   release_time: "08:00"
   timezone: Europe/London
 
@@ -51,21 +57,16 @@ attempts:
 
 base_url: ""                   # inferred from discovery if left blank
 recipe_path: "captured/recipe.json"
-state_path: "captured/storage_state.json"
 
+# Where the secrets live. You only need whichever the captured sign-in
+# actually uses: a password exchange, or a refresh-token renewal. `discover`
+# writes a captured refresh token to captured/secrets.env for you.
 username_env: DL_USERNAME
 password_env: DL_PASSWORD
+refresh_token_env: DL_REFRESH_TOKEN
 
 notify: true
 dry_run: false
 
-extras:
-  # Only needed for the browser fallback (`snipe --browser-fallback`).
-  # The HTTP path does not use any of this.
-  browser:
-    booking_url: ""            # may contain {date}
-    slot: ""                   # CSS selector matching every bookable slot
-    slot_time_attr: ""         # read time from an attribute instead of text
-    confirm: ""                # CSS selector for the confirm button
-    success: ""                # CSS selector that appears on success
-    cookie_accept: ""
+# Free-form, passed through to the recipe's value bag. Rarely needed.
+extras: {}

@@ -27,7 +27,7 @@ def make_config(times, *, weekday=SAT, courts=()):
         targets=(Target(weekday, "saturday", tuple(
             time(int(x.split(":")[0]), int(x.split(":")[1])) for x in times)),),
         attempts=AttemptPolicy(),
-        base_url="", recipe_path=Path("r"), state_path=Path("s"),
+        base_url="", recipe_path=Path("r"),
     )
 
 

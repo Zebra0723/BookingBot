@@ -95,12 +95,33 @@ def test_credentials_come_from_the_environment(tmp_path, monkeypatch):
     assert c.credentials().username == "me@example.com"
 
 
-def test_missing_credentials_are_reported_clearly(tmp_path, monkeypatch):
+def test_absent_credentials_are_empty_rather_than_fatal(tmp_path, monkeypatch):
+    # Which secrets are needed depends on the captured auth step — a password
+    # sign-in or a refresh-token renewal — so the config no longer demands a
+    # fixed pair. The client checks against the recipe and names what is missing.
     c = load(write(tmp_path, GOOD))
-    monkeypatch.delenv("DL_USERNAME", raising=False)
-    monkeypatch.delenv("DL_PASSWORD", raising=False)
-    with pytest.raises(ConfigError, match="DL_USERNAME"):
-        c.credentials()
+    for var in ("DL_USERNAME", "DL_PASSWORD", "DL_REFRESH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    creds = c.credentials()
+    assert creds.username == "" and creds.password == "" and creds.refresh_token == ""
+
+
+def test_credentials_report_which_variable_holds_each_secret(tmp_path):
+    c = load(write(tmp_path, GOOD))
+    assert c.credentials().env_var_for("password") == "DL_PASSWORD"
+    assert c.credentials().env_var_for("refresh_token") == "DL_REFRESH_TOKEN"
+
+
+def test_refresh_token_env_var_can_be_renamed(tmp_path, monkeypatch):
+    p = write(tmp_path, GOOD + '\nrefresh_token_env: MY_TOKEN\n')
+    monkeypatch.setenv("MY_TOKEN", "rt-123")
+    assert load(p).credentials().refresh_token == "rt-123"
+
+
+def test_an_inline_refresh_token_is_rejected(tmp_path):
+    p = write(tmp_path, GOOD + '\nrefresh_token: "rt-secret-value"\n')
+    with pytest.raises(ConfigError, match="environment"):
+        load(p)
 
 
 def test_attempt_policy_rejects_an_absurd_prefire():

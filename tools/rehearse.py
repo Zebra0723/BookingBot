@@ -102,7 +102,6 @@ attempts:
   retry_interval_ms: 200
 base_url: "{base}"
 recipe_path: "{recipe}"
-state_path: "{recipe.parent / 'storage_state.json'}"
 notify: false
 """.lstrip())
 

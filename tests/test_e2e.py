@@ -76,7 +76,7 @@ def make_config(window, target, base, times, courts=()):
         window=window,
         targets=(Target(target.weekday(), "target", tuple(times)),),
         attempts=AttemptPolicy(prefire_ms=200, retry_for_seconds=15, retry_interval_ms=150),
-        base_url=base, recipe_path=Path("r"), state_path=Path("s"),
+        base_url=base, recipe_path=Path("r"),
     )
 
 

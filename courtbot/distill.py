@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import Any, Iterable
+from urllib.parse import unquote
 
 from .recipe import Recipe, SlotMapping, Step, VOLATILE_HEADERS, extract_path
 
@@ -40,6 +41,10 @@ BOOK_SOFT_NEGATIVE = re.compile(r"(list|search|upcoming|summary|availabilit)", r
 
 PASSWORD_KEYS = re.compile(r"(password|passwd|pwd|pin|secret|credential)", re.I)
 USERNAME_KEYS = re.compile(r"(username|user|email|login|membership|memberid)", re.I)
+# A phone app usually signs in once and then renews a long-lived refresh
+# token, so a capture may show a renewal rather than a password exchange.
+REFRESH_KEYS = re.compile(r"(refresh[-_]?token|grant[-_]?type)", re.I)
+
 TOKEN_KEYS = re.compile(
     r"^(access[-_]?token|id[-_]?token|auth[-_]?token|jwt|bearer|token|session[-_]?id|sid|api[-_]?key)$",
     re.I,
@@ -68,6 +73,9 @@ class Exchange:
     response_text: str
     resource_type: str = ""
     started_at: float = 0.0
+    # Set when the capture tool recorded a transport failure rather than a
+    # reply — the usual fingerprint of certificate pinning.
+    error: str = ""
 
     @property
     def json_body(self) -> Any:
@@ -179,7 +187,11 @@ def _looks_like_login(ex: Exchange) -> int:
             score += 5
         if any(USERNAME_KEYS.search(k) for k in keys):
             score += 2
+        if any(REFRESH_KEYS.search(k) for k in keys):
+            score += 5
     elif ex.body and PASSWORD_KEYS.search(ex.body):
+        score += 4
+    elif ex.body and REFRESH_KEYS.search(ex.body):
         score += 4
     if find_token_path(ex.json_response):
         score += 3
@@ -410,6 +422,9 @@ class Distillation:
     report: list[str]
     considered: int
     kept: int
+    # Captured secrets that cannot be retyped from memory, kept out of the
+    # recipe and handed to the caller to store safely.
+    secrets: dict[str, str] = field(default_factory=dict)
 
 
 def distill(
@@ -441,6 +456,7 @@ def distill(
     if booked_time:
         subs.append((time_variants(booked_time), "time"))
 
+    secrets: dict[str, str] = {}
     slot_ids: dict[str, list[str]] = {"slot_id": [], "court_id": []}
     # The captured Authorization header carries the token from the *recording*
     # session. Replayed as-is it is long expired, so the literal value is
@@ -454,7 +470,7 @@ def distill(
         score, ex = scored_login[0]
         body, _ = _templatise(ex.body, [])
         # Re-template the credentials themselves so they come from the env.
-        body = _replace_credentials(body)
+        body, secrets = _replace_credentials(body)
         step = Step(
             name="login", method=ex.method.upper(), url=ex.url,
             headers=_clean_headers(ex.headers), body=body,
@@ -474,6 +490,11 @@ def distill(
                 f"response; auth is probably cookie-based (that is fine, cookies are kept)"
             )
         recipe.login = step
+        if "refresh_token" in secrets:
+            report.append(
+                "  this is a refresh-token renewal, not a password sign-in — "
+                "the token has been kept out of the recipe"
+            )
     else:
         report.append(
             "login: NOT FOUND. If you were already signed in when discovery started, "
@@ -599,36 +620,59 @@ def distill(
         )
 
     return Distillation(recipe=recipe, report=report,
-                        considered=len(exchanges), kept=len(candidates))
+                        considered=len(exchanges), kept=len(candidates),
+                        secrets=secrets)
 
 
-def _replace_credentials(body: str | None) -> str | None:
-    """Swap captured credentials for placeholders so nothing secret is written.
+def _replace_credentials(body: str | None) -> tuple[str | None, dict[str, str]]:
+    """Swap captured credentials for placeholders, and hand back what was found.
 
-    The recipe file is committed and read by humans; a captured password must
-    never reach it. Values are replaced by name, and the sniper fills them from
-    the environment at run time.
+    The recipe is committed and read by humans, so a captured password or
+    refresh token must never reach it. Each is replaced by a placeholder the
+    sniper fills from the environment.
+
+    The captured *values* are returned separately rather than discarded: a
+    refresh token cannot be typed from memory, so the caller writes it to a
+    protected file instead of making the user dig through the HAR by hand. A
+    password is deliberately not returned — the user already knows it.
     """
     if not body:
-        return body
+        return body, {}
+    found: dict[str, str] = {}
+
+    def classify(key: str) -> str | None:
+        # Order matters: "refresh_token" also matches the generic token rule.
+        if REFRESH_KEYS.search(key) and "grant" not in key.lower():
+            return "refresh_token"
+        if PASSWORD_KEYS.search(key):
+            return "password"
+        if USERNAME_KEYS.search(key):
+            return "username"
+        return None
+
     parsed = _try_json(body)
     if isinstance(parsed, dict):
         out = dict(parsed)
         for k in list(out):
-            if PASSWORD_KEYS.search(k):
-                out[k] = "{password}"
-            elif USERNAME_KEYS.search(k) and isinstance(out[k], str):
-                out[k] = "{username}"
-        return json.dumps(out)
-    # Form-encoded fallback.
+            kind = classify(k)
+            if kind is None or not isinstance(out[k], str):
+                continue
+            if kind == "refresh_token":
+                found["refresh_token"] = out[k]
+            out[k] = "{%s}" % kind
+        return json.dumps(out), found
+
+    # Form-encoded fallback (common for OAuth token endpoints).
     def sub(m: re.Match[str]) -> str:
-        key = m.group(1)
-        if PASSWORD_KEYS.search(key):
-            return f"{key}={{password}}"
-        if USERNAME_KEYS.search(key):
-            return f"{key}={{username}}"
-        return m.group(0)
-    return re.sub(r"([A-Za-z0-9_\-\[\]]+)=([^&]*)", sub, body)
+        key, value = m.group(1), m.group(2)
+        kind = classify(key)
+        if kind is None:
+            return m.group(0)
+        if kind == "refresh_token":
+            found["refresh_token"] = unquote(value)
+        return f"{key}={{{kind}}}"
+
+    return re.sub(r"([A-Za-z0-9_\-\[\]]+)=([^&]*)", sub, body), found
 
 
 def _short(url: str, limit: int = 78) -> str:

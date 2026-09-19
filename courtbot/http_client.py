@@ -153,13 +153,40 @@ class BookingClient:
 
     # -- the three steps --------------------------------------------------
 
-    def login(self, username: str, password: str) -> None:
+    # Secrets the auth step may ask for, and which must come from the
+    # environment rather than the recipe file.
+    AUTH_PLACEHOLDERS = ("username", "password", "refresh_token")
+
+    def login(self, credentials) -> None:
+        """Run the captured auth step with secrets from the environment.
+
+        What it needs depends on what the app did: a password sign-in, or a
+        refresh-token renewal. Rather than demand a fixed pair, the recipe is
+        asked what it references and only those are required.
+        """
         step = self.recipe.login
-        self.values.update({"username": username, "password": password})
+        supplied = credentials.as_values()
+        self.values.update({k: v for k, v in supplied.items() if v})
+
         if step is None:
-            log.info("recipe has no login step; assuming cookie auth from storage state")
-            self.authenticated = True
-            return
+            raise RecipeError(
+                "the recipe has no authentication step, so the bot cannot sign "
+                "in. Sign out in the app, capture again while signing back in, "
+                "and re-run `courtbot discover`."
+            )
+
+        missing = [
+            name for name in step.placeholders()
+            if name in self.AUTH_PLACEHOLDERS and not supplied.get(name)
+        ]
+        if missing:
+            wanted = ", ".join(credentials.env_var_for(m) for m in missing)
+            raise RecipeError(
+                f"the captured sign-in needs {missing}, which are not set. "
+                f"Export {wanted} before running. They are never read from the "
+                f"config file."
+            )
+
         resp = self._send(step, self.values)
         if not step.ok(resp.status_code):
             raise RecipeError(
@@ -175,7 +202,9 @@ class BookingClient:
             except (requests.RequestException, RecipeError) as exc:
                 log.warning("preflight step %s failed: %s", extra.name, exc)
         self.authenticated = True
-        log.info("authenticated as %s", username)
+        log.info("authenticated (%s)",
+                 "refresh token" if "refresh_token" in step.placeholders()
+                 else credentials.username or "captured session")
 
     def availability(self, target: date) -> list[Slot]:
         step = self.recipe.availability

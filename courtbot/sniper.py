@@ -243,7 +243,6 @@ class Sniper:
             )
 
         client = self._make_client()
-        creds = self.config.credentials()
 
         # Pre-warm well before the release: authenticate and open the TLS
         # connection so the first request at T-0 is the booking traffic itself.
@@ -252,7 +251,7 @@ class Sniper:
             sleep_until(self.clock, plan.release_at - timedelta(seconds=90))
 
         client.prewarm()
-        client.login(creds.username, creds.password)
+        client.login(self.config.credentials())
 
         lag = 0.0
         if wait:
@@ -296,8 +295,7 @@ class Sniper:
                 log.warning("session expired — logging in again")
                 outcome.attempts.append(Attempt(now, None, None, "re-authenticating"))
                 try:
-                    creds = self.config.credentials()
-                    client.login(creds.username, creds.password)
+                    client.login(self.config.credentials())
                 except Exception as relogin_exc:  # noqa: BLE001
                     outcome.note = f"could not re-authenticate: {relogin_exc}"
                     return outcome

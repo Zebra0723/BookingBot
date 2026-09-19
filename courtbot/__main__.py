@@ -11,9 +11,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from . import notify
-from .browser import BrowserError, BrowserSelectors, book_via_ui
 from .config import Config, ConfigError, load as load_config
-from .discover import DiscoveryError, analyse, record
+from . import doctor as doctor_mod
+from .discover import DiscoveryError, analyse
 from .http_client import BookingClient
 from .recipe import Recipe, RecipeError
 from .sniper import Sniper, choose_slot, next_actionable_release
@@ -53,14 +53,7 @@ def _parse_time(raw: str) -> time:
 
 def cmd_discover(args) -> int:
     out_dir = Path(args.out)
-    if args.har:
-        har_path = Path(args.har)
-        print(f"Re-analysing {har_path} (no browser launched)")
-    else:
-        if not args.url:
-            raise SystemExit("--url is required unless you pass --har")
-        har_path = record(args.url, out_dir=out_dir, headless=args.headless)
-
+    har_path = Path(args.har)
     booked_date = _parse_date(args.booked_date) if args.booked_date else None
     booked_time = _parse_time(args.booked_time) if args.booked_time else None
     if booked_date is None:
@@ -80,6 +73,10 @@ def cmd_discover(args) -> int:
     problems = result.recipe.validate()
     print(f"\n  recipe -> {result.recipe_path}")
     print(f"  har    -> {result.har_path}")
+    if result.secrets_path:
+        names = ", ".join(f"DL_{n.upper()}" for n in sorted(result.secrets))
+        print(f"  secret -> {result.secrets_path}  ({names}, mode 0600)")
+        print(f"            load it before running:  source {result.secrets_path}")
     if problems:
         print("\n  NOT READY:")
         for p in problems:
@@ -87,6 +84,25 @@ def cmd_discover(args) -> int:
         return 1
     print("\n  Recipe looks complete. Verify it with:  courtbot check --date YYYY-MM-DD")
     return 0
+
+
+def cmd_doctor(args) -> int:
+    """Report what a capture contains before a recipe is built from it."""
+    from . import har as har_reader
+
+    exchanges = har_reader.parse(Path(args.har))
+    findings = doctor_mod.diagnose(
+        exchanges,
+        booked_date=_parse_date(args.booked_date) if args.booked_date else None,
+        booked_time=_parse_time(args.booked_time) if args.booked_time else None,
+    )
+    print()
+    for f in findings:
+        print(f.render())
+        print()
+    usable, summary = doctor_mod.verdict(findings)
+    print(f"  {summary}\n")
+    return 0 if usable else 1
 
 
 def cmd_plan(args) -> int:
@@ -126,8 +142,7 @@ def cmd_check(args) -> int:
         "club_id": cfg.club.club_id, "activity_id": cfg.club.activity_id,
         "duration": cfg.club.duration_minutes,
     })
-    creds = cfg.credentials()
-    client.login(creds.username, creds.password)
+    client.login(cfg.credentials())
     slots = client.availability(target)
     free = [s for s in slots if s.available]
     print(f"\n  {target:%a %d %b %Y}: {len(slots)} slots, {len(free)} free")
@@ -155,23 +170,6 @@ def cmd_snipe(args) -> int:
     if outcome.attempts:
         print(f"  fire lag {outcome.fire_lag_ms:+.1f}ms, "
               f"clock offset {outcome.clock_offset:+.3f}s")
-
-    if (not outcome.booked and not outcome.deferred
-            and outcome.target_date and args.browser_fallback):
-        print("\n  HTTP path failed — trying the browser fallback…")
-        try:
-            wanted = cfg.target_for_weekday(outcome.target_date.weekday())
-            ok, detail = book_via_ui(
-                outcome.target_date, list(wanted.times) if wanted else [],
-                BrowserSelectors.from_config(cfg.extras),
-                storage_state=cfg.state_path,
-                headless=not args.headed, dry_run=cfg.dry_run,
-            )
-            print(f"  browser fallback: {detail}")
-            outcome.booked = ok
-            outcome.note = detail
-        except BrowserError as exc:
-            print(f"  browser fallback unavailable: {exc}")
 
     notify.announce(outcome, enabled=cfg.notify)
     return 0 if (outcome.booked or outcome.deferred) else 1
@@ -206,8 +204,7 @@ def cmd_calibrate(args) -> int:
         "club_id": cfg.club.club_id, "activity_id": cfg.club.activity_id,
         "duration": cfg.club.duration_minutes,
     })
-    creds = cfg.credentials()
-    client.login(creds.username, creds.password)
+    client.login(cfg.credentials())
 
     while clock.now() < start:
         _time.sleep(min(30.0, max(0.5, clock.seconds_until(start))))
@@ -235,29 +232,6 @@ def cmd_calibrate(args) -> int:
         _time.sleep(args.interval)
     print("  window did not open during the watch period")
     return 1
-
-
-def cmd_selectors(args) -> int:
-    cfg = load_config(args.config)
-    sel = BrowserSelectors.from_config(cfg.extras)
-    missing = sel.usable()
-    print("  browser fallback config (extras.browser in your YAML):")
-    for name, value in (
-        ("booking_url", sel.booking_url), ("slot", sel.slot),
-        ("slot_time_attr", sel.slot_time_attr), ("confirm", sel.confirm),
-        ("success", sel.success), ("cookie_accept", sel.cookie_accept),
-    ):
-        print(f"    {name:16} {value or '(unset)'}")
-    if missing:
-        print("\n  required but unset: " + ", ".join(missing))
-        print(
-            "\n  To find them: open the booking page in Chrome, right-click a\n"
-            "  slot -> Inspect, and copy a CSS selector that matches every slot.\n"
-            "  The HTTP path does not need any of this — it is only a fallback."
-        )
-        return 1
-    print("\n  browser fallback is configured")
-    return 0
 
 
 def cmd_install(args) -> int:
@@ -328,15 +302,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip NTP sync and trust the local clock")
     sub = p.add_subparsers(dest="command", required=True)
 
-    d = sub.add_parser("discover", help="record a real booking and build the recipe")
-    d.add_argument("--url", help="booking site URL to open")
-    d.add_argument("--har", help="analyse an existing HAR instead of recording")
+    d = sub.add_parser("discover", help="build the recipe from a captured session")
+    d.add_argument("--har", required=True,
+                   help="HAR of the app session in which you booked a court")
     d.add_argument("--out", default="captured", help="output directory")
     d.add_argument("--booked-date", help="the date you booked, YYYY-MM-DD")
     d.add_argument("--booked-time", help="the time you booked, HH:MM")
     d.add_argument("--base-url", help="override the inferred API origin")
-    d.add_argument("--headless", action="store_true", help="(not recommended)")
     d.set_defaults(func=cmd_discover)
+
+    doc = sub.add_parser("doctor", help="check whether a capture is usable")
+    doc.add_argument("--har", required=True, help="the captured session to inspect")
+    doc.add_argument("--booked-date", help="the date you booked, YYYY-MM-DD")
+    doc.add_argument("--booked-time", help="the time you booked, HH:MM")
+    doc.set_defaults(func=cmd_doctor)
 
     pl = sub.add_parser("plan", help="show the next release without doing anything")
     pl.add_argument("--config", default="config.yaml")
@@ -354,8 +333,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="do everything except book")
     s.add_argument("--max-wait", type=float, default=1.0,
                    help="hours to block waiting for a release (default 1)")
-    s.add_argument("--browser-fallback", action="store_true")
-    s.add_argument("--headed", action="store_true", help="show the fallback browser")
     s.set_defaults(func=cmd_snipe)
 
     cal = sub.add_parser("calibrate", help="measure the real release time")
@@ -365,10 +342,6 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--interval", type=float, default=1.0, help="poll seconds")
     cal.add_argument("--horizon", type=int, default=21)
     cal.set_defaults(func=cmd_calibrate)
-
-    sel = sub.add_parser("selectors", help="check browser-fallback configuration")
-    sel.add_argument("--config", default="config.yaml")
-    sel.set_defaults(func=cmd_selectors)
 
     i = sub.add_parser("install-launchd", help="write a macOS launchd job")
     i.add_argument("--config", default="config.yaml")
@@ -385,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return args.func(args)
-    except (ConfigError, RecipeError, DiscoveryError, BrowserError) as exc:
+    except (ConfigError, RecipeError, DiscoveryError) as exc:
         print(f"\n  error: {exc}\n", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
