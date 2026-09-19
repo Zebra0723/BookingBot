@@ -241,6 +241,21 @@ def cmd_install(args) -> int:
     project = Path.cwd().resolve()
     python = args.python or sys.executable
     label = args.label
+    env_file = Path(args.env_file)
+
+    # Secrets are sourced from one protected file rather than copied into the
+    # plist. A plist in ~/Library/LaunchAgents is world-readable by default, and
+    # duplicating a password into it means two places to rotate and one to
+    # forget. Sourcing also covers refresh-token auth, where the secret is
+    # written by `discover` and never typed at all.
+    vars_needed = ", ".join(
+        v for v in (cfg.username_env, cfg.password_env, cfg.refresh_token_env) if v
+    )
+    command = (
+        f"cd {_sh(project)} && "
+        f"[ -f {_sh(env_file)} ] && . {_sh(env_file)}; "
+        f"exec {_sh(python)} -m courtbot snipe --config {_sh(project / args.config)}"
+    )
 
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -250,12 +265,9 @@ def cmd_install(args) -> int:
   <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{python}</string>
-    <string>-m</string>
-    <string>courtbot</string>
-    <string>snipe</string>
-    <string>--config</string>
-    <string>{project / args.config}</string>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>{_xml(command)}</string>
   </array>
   <key>WorkingDirectory</key><string>{project}</string>
   <key>StartCalendarInterval</key>
@@ -263,15 +275,9 @@ def cmd_install(args) -> int:
     <key>Hour</key><integer>{fire.hour}</integer>
     <key>Minute</key><integer>{fire.minute}</integer>
   </dict>
-  <!-- Wake the Mac rather than skipping the run if it is asleep at the time. -->
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>{project}/captured/launchd.out.log</string>
   <key>StandardErrorPath</key><string>{project}/captured/launchd.err.log</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>DL_USERNAME</key><string>{'{{SET_ME}}'}</string>
-    <key>DL_PASSWORD</key><string>{'{{SET_ME}}'}</string>
-  </dict>
 </dict>
 </plist>
 """
@@ -280,14 +286,38 @@ def cmd_install(args) -> int:
     print(f"  wrote {out}")
     print(f"\n  Fires at {fire:%H:%M} local time ({args.lead} min before the "
           f"{cfg.window.release_time:%H:%M} release).")
+    print(f"  Reads secrets from {env_file} — no credentials are stored in the plist.")
+
+    if env_file.exists():
+        print(f"  That file exists. Make sure it exports: {vars_needed}")
+    else:
+        print(f"\n  {env_file} does not exist yet. Create it with whichever your")
+        print(f"  captured sign-in uses, then lock it down:")
+        print(f"      mkdir -p {env_file.parent}")
+        print(f"      cat > {env_file} <<'EOF'")
+        print(f"      export {cfg.username_env}='you@example.com'")
+        print(f"      export {cfg.password_env}='your-password'")
+        print(f"      EOF")
+        print(f"      chmod 600 {env_file}")
+
     print("\n  To install:")
     print(f"    cp {out} ~/Library/LaunchAgents/{label}.plist")
-    print(f"    # edit it to set DL_USERNAME / DL_PASSWORD")
     print(f"    launchctl load ~/Library/LaunchAgents/{label}.plist")
-    print("\n  Also: System Settings > Battery > Options > 'Wake for network access',")
-    print("  or schedule a wake with:  sudo pmset repeat wakeorpoweron MTWRFSU "
-          f"{fire:%H:%M}:00")
+    print("\n  Let the Mac wake for it, or it will miss the release:")
+    print(f"    sudo pmset repeat wakeorpoweron MTWRFSU {fire:%H:%M}:00")
+    print("    System Settings > Battery > Options > 'Wake for network access'")
     return 0
+
+
+def _sh(value) -> str:
+    """Single-quote a path for embedding in a shell command."""
+    text = str(value)
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def _xml(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
 
 
 # --- wiring -----------------------------------------------------------------
@@ -349,6 +379,8 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--label", default="com.courtbot.chelsea")
     i.add_argument("--python", help="python interpreter to use")
     i.add_argument("--output", help="where to write the plist")
+    i.add_argument("--env-file", default="captured/secrets.env",
+                   help="file the job sources its secrets from")
     i.set_defaults(func=cmd_install)
     return p
 

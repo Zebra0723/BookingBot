@@ -33,6 +33,10 @@ here would be a guess, and would break the first time they shipped a change.
 
 ## Setup
 
+**[SETUP.md](SETUP.md) is the step-by-step version** — every command, the
+iPad proxy setup in full, and what to do when each check fails. The summary
+below is for orientation.
+
 ### 1. Install
 
 ```bash
@@ -167,7 +171,7 @@ A mock booking API ships with the project. It enforces a release gate, refuses
 double bookings, and can simulate rivals taking slots the instant they open.
 
 ```bash
-python -m pytest tests/ -q          # 152 tests
+python -m pytest tests/ -q          # 161 tests
 python tools/rehearse.py            # drives the real CLI end to end
 python tools/rehearse.py --basket   # same, with a two-step basket flow
 ```
