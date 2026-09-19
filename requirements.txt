@@ -1,0 +1,4 @@
+requests>=2.31
+PyYAML>=6.0
+# Only needed for `discover` and the browser fallback:
+playwright>=1.40

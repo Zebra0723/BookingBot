@@ -1,0 +1,11 @@
+# Captured session data — contains cookies, tokens and your booking history.
+captured/
+config.yaml
+*.har
+*.plist
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

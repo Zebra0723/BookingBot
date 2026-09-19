@@ -1,0 +1,71 @@
+# courtbot — copy to config.yaml and edit.
+#
+# Credentials are NOT stored here. Export them instead:
+#   export DL_USERNAME='you@example.com'
+#   export DL_PASSWORD='...'
+# The loader refuses to start if it finds a password in this file.
+
+club:
+  name: "Harbour Club Chelsea"
+  activity: tennis             # tennis | padel | badminton | pickleball
+  duration_minutes: 60         # 30 | 60 | 90 | 120
+
+  # Filled in from discovery if the API needs them. Leave blank until then —
+  # `courtbot discover` prints the values it saw.
+  club_id: ""
+  activity_id: ""
+
+  # Optional tie-break when several courts are free at the same time.
+  # Only breaks ties; it never overrides your time preference below.
+  court_preference: []
+  # court_preference: ["Court 1", "Court 2"]
+
+window:
+  # Harbour Club Chelsea publishes 9 days in advance online (8 via reception).
+  # Booking on a Monday reaches the following Wednesday.
+  advance_days: 9
+
+  # IMPORTANT: verify this before relying on it. David Lloyd documents 7:30am
+  # for some clubs and 8am for others, and Chelsea is not in the published
+  # 7:30am list. Run `courtbot calibrate` once — it watches the boundary and
+  # tells you the real time to the second.
+  release_time: "08:00"
+  timezone: Europe/London
+
+# Which weekday you want, and the start times to try, BEST FIRST.
+# Exactly one new date opens at each release, so a weekday listed here is
+# attempted only on the morning it opens.
+targets:
+  - weekday: saturday
+    times: ["10:00", "11:00", "09:00"]
+  - weekday: sunday
+    times: ["10:00", "09:00"]
+
+attempts:
+  # Send the first request slightly early so it arrives as the window opens.
+  # Raise if your connection is slow; too high and the server rejects it.
+  prefire_ms: 250
+  retry_for_seconds: 45
+  retry_interval_ms: 400
+  request_timeout: 10
+
+base_url: ""                   # inferred from discovery if left blank
+recipe_path: "captured/recipe.json"
+state_path: "captured/storage_state.json"
+
+username_env: DL_USERNAME
+password_env: DL_PASSWORD
+
+notify: true
+dry_run: false
+
+extras:
+  # Only needed for the browser fallback (`snipe --browser-fallback`).
+  # The HTTP path does not use any of this.
+  browser:
+    booking_url: ""            # may contain {date}
+    slot: ""                   # CSS selector matching every bookable slot
+    slot_time_attr: ""         # read time from an attribute instead of text
+    confirm: ""                # CSS selector for the confirm button
+    success: ""                # CSS selector that appears on success
+    cookie_accept: ""
