@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 
 from .config import Config, Target
-from .http_client import BookingClient, BookingResult, Slot
+from .http_client import AuthExpired, BookingClient, BookingResult, Slot
 from .recipe import Recipe, RecipeError
 from .timing import ClockSync
 
@@ -277,11 +277,31 @@ class Sniper:
         outcome = SnipeOutcome(booked=False, target_date=plan.target_date)
         deadline = self.clock.now() + timedelta(seconds=policy.retry_for_seconds)
         tried_slot_ids: set[str] = set()
+        relogins = 0
 
         while self.clock.now() < deadline:
             now = self.clock.now()
             try:
                 slots = client.availability(plan.target_date)
+            except AuthExpired as exc:
+                # Pre-warming logs in ~90s early, so a short-lived token can
+                # lapse before the release. Retrying a dead session never
+                # recovers; one re-login does.
+                if relogins >= 1:
+                    outcome.attempts.append(
+                        Attempt(now, None, None, f"session expired again: {exc}"))
+                    outcome.note = "authentication kept failing"
+                    return outcome
+                relogins += 1
+                log.warning("session expired — logging in again")
+                outcome.attempts.append(Attempt(now, None, None, "re-authenticating"))
+                try:
+                    creds = self.config.credentials()
+                    client.login(creds.username, creds.password)
+                except Exception as relogin_exc:  # noqa: BLE001
+                    outcome.note = f"could not re-authenticate: {relogin_exc}"
+                    return outcome
+                continue
             except Exception as exc:  # noqa: BLE001 - reported, then retried
                 outcome.attempts.append(Attempt(now, None, None, f"availability error: {exc}"))
                 log.warning("availability failed: %s", exc)

@@ -74,6 +74,10 @@ def parse_slot_time(value: Any) -> time | None:
     return time(int(m.group(1)), int(m.group(2)))
 
 
+class AuthExpired(RecipeError):
+    """The session was rejected. Recoverable by logging in again."""
+
+
 class BookingClient:
     """Executes a Recipe. One instance per booking attempt run."""
 
@@ -179,6 +183,12 @@ class BookingClient:
             raise RecipeError("recipe has no availability step; re-run discovery")
         values = dict(self.values, date=target.isoformat(), date_iso=target.isoformat())
         resp = self._send(step, values)
+        if resp.status_code in (401, 403):
+            self.authenticated = False
+            raise AuthExpired(
+                f"availability lookup rejected with HTTP {resp.status_code}; "
+                f"the session has expired"
+            )
         if not step.ok(resp.status_code):
             raise RecipeError(
                 f"availability lookup failed with HTTP {resp.status_code}: "

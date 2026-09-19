@@ -156,7 +156,8 @@ def cmd_snipe(args) -> int:
         print(f"  fire lag {outcome.fire_lag_ms:+.1f}ms, "
               f"clock offset {outcome.clock_offset:+.3f}s")
 
-    if not outcome.booked and not outcome.deferred and args.browser_fallback:
+    if (not outcome.booked and not outcome.deferred
+            and outcome.target_date and args.browser_fallback):
         print("\n  HTTP path failed — trying the browser fallback…")
         try:
             wanted = cfg.target_for_weekday(outcome.target_date.weekday())
@@ -216,7 +217,7 @@ def cmd_calibrate(args) -> int:
         now = clock.now()
         try:
             free = sum(1 for s in client.availability(target) if s.available)
-        except (RecipeError, Exception) as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             free = -1
             logging.debug("poll failed: %s", exc)
         if free != last:

@@ -184,7 +184,7 @@ python tools/mock_club.py --port 8765 --release-in 60
 The test suite drives the whole pipeline against it:
 
 ```bash
-python -m pytest tests/ -q      # 122 tests
+python -m pytest tests/ -q      # 126 tests
 ```
 
 And a dress rehearsal drives the **real CLI** — the same commands you will
@@ -220,6 +220,11 @@ then confirm at checkout). Discovery detects that and records the whole chain,
 wiring each step's output into the next — a basket id created in step one
 reaches the confirmation in step two as a placeholder, not as the stale literal
 it was captured with. Single-request flows are left as one step.
+
+**Session recovery.** Login happens ~90 seconds before the release so the
+connection is hot when the window opens. A short-lived token can lapse inside
+that gap, so a rejected session triggers exactly one re-login — enough to
+recover, not enough to spin on a bad password while the release goes by.
 
 **Fallback.** If the HTTP path is ever blocked (a WAF, a browser-bound token),
 `snipe --browser-fallback` replays the booking through a real browser using the
