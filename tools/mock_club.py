@@ -44,6 +44,8 @@ class ClubState:
         self.tokens: set[str] = set()
         self.lock = threading.Lock()
         self.booking_log: list[dict] = []
+        # Basket flow: a tentative hold that a later checkout confirms.
+        self.baskets: dict[str, str] = {}
 
     def is_open(self, target: date) -> bool:
         """Whether `target` is inside the released window right now."""
@@ -94,6 +96,36 @@ class ClubState:
             self.booked.add(slot_id)
             ref = f"BK-{uuid.uuid4().hex[:8].upper()}"
             self.booking_log.append({"ref": ref, "slot": slot_id, "at": now.isoformat()})
+            return True, ref
+
+
+    def hold(self, slot_id: str) -> tuple[bool, str]:
+        """Tentatively reserve a slot and return a basket id."""
+        with self.lock:
+            m = re.match(r"^(\d{4}-\d{2}-\d{2})-", slot_id or "")
+            if not m:
+                return False, "unknown slot"
+            if not self.is_open(date.fromisoformat(m.group(1))):
+                return False, "outside booking window"
+            if slot_id in self.booked or slot_id in self.baskets.values():
+                return False, "slot no longer available"
+            basket = f"BSK-{uuid.uuid4().hex[:12]}"
+            self.baskets[basket] = slot_id
+            return True, basket
+
+    def checkout(self, basket: str) -> tuple[bool, str]:
+        with self.lock:
+            slot_id = self.baskets.pop(basket, None)
+            if slot_id is None:
+                return False, "basket not found or expired"
+            if slot_id in self.booked:
+                return False, "slot no longer available"
+            self.booked.add(slot_id)
+            ref = f"BK-{uuid.uuid4().hex[:8].upper()}"
+            self.booking_log.append({
+                "ref": ref, "slot": slot_id,
+                "at": datetime.now(timezone.utc).isoformat(),
+            })
             return True, ref
 
 
@@ -154,6 +186,24 @@ class Handler(BaseHTTPRequestHandler):
             if not self._auth_ok():
                 return self._json(401, {"error": "unauthorised"})
             ok, detail = self.state.book(str(payload.get("slotId", "")))
+            if ok:
+                return self._json(201, {"data": {"bookingRef": detail, "status": "CONFIRMED"}})
+            return self._json(409, {"error": detail})
+
+        # --- basket flow: add to basket, then confirm at checkout ---
+        if parts.path == "/api/v2/basket":
+            if not self._auth_ok():
+                return self._json(401, {"error": "unauthorised"})
+            ok, detail = self.state.hold(str(payload.get("slotId", "")))
+            if ok:
+                return self._json(201, {"data": {"basketId": detail, "expiresIn": 300}})
+            return self._json(409, {"error": detail})
+
+        m = re.match(r"^/api/v2/basket/([A-Za-z0-9\-]+)/checkout$", parts.path)
+        if m:
+            if not self._auth_ok():
+                return self._json(401, {"error": "unauthorised"})
+            ok, detail = self.state.checkout(m.group(1))
             if ok:
                 return self._json(201, {"data": {"bookingRef": detail, "status": "CONFIRMED"}})
             return self._json(409, {"error": detail})

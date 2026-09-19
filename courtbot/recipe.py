@@ -169,35 +169,58 @@ class Recipe:
     login: Step | None = None
     availability: Step | None = None
     book: Step | None = None
+    # Multi-step booking (add to basket -> checkout -> confirm). When present
+    # this replaces `book`; each step's `extract` feeds the next, which is how
+    # a basket id created in step one reaches the confirmation in step three.
+    book_chain: list[Step] = field(default_factory=list)
     slots: SlotMapping = field(default_factory=SlotMapping)
     # Extra steps replayed between login and availability (CSRF warm-ups etc).
     preflight: list[Step] = field(default_factory=list)
     captured_at: str = ""
     source: str = ""
 
+    def booking_steps(self) -> list[Step]:
+        """The booking requests to run, in order."""
+        if self.book_chain:
+            return list(self.book_chain)
+        return [self.book] if self.book else []
+
     def validate(self) -> list[str]:
         """Return human-readable problems; empty means ready to run."""
         problems: list[str] = []
         if not self.availability:
             problems.append("no availability step — discovery did not see a slot list")
-        if not self.book:
+
+        steps = self.booking_steps()
+        if not steps:
             problems.append(
                 "no booking step — discovery must observe one *completed* booking, "
                 "not just browsing"
             )
-        if self.book:
-            unknown = self.book.placeholders() - {
-                "date", "time", "court_id", "slot_id", "club_id", "activity_id",
-                "duration", "token", "username", "password", "end_time",
-            }
-            known_from_avail = set(self.availability.extract) if self.availability else set()
-            unknown -= known_from_avail
-            unknown -= set(self.login.extract) if self.login else set()
+
+        # Values the runtime always supplies, plus anything an earlier step
+        # extracts. Walking the chain in order means a step may rely on a value
+        # produced by any step before it, but not by one after it.
+        known = {
+            "date", "date_iso", "time", "end_time", "court_id", "slot_id",
+            "club_id", "activity_id", "duration", "token", "username", "password",
+        }
+        if self.login:
+            known |= set(self.login.extract)
+        if self.availability:
+            known |= set(self.availability.extract)
+        for s in self.preflight:
+            known |= set(s.extract)
+
+        for i, step in enumerate(steps):
+            unknown = step.placeholders() - known
             if unknown:
+                where = f"booking step {i + 1} ({step.name})" if len(steps) > 1 else "booking step"
                 problems.append(
-                    f"booking step needs value(s) {sorted(unknown)} that nothing "
+                    f"{where} needs value(s) {sorted(unknown)} that nothing "
                     f"produces — add them to an earlier step's `extract`"
                 )
+            known |= set(step.extract)
         return problems
 
     def to_dict(self) -> dict:
@@ -209,6 +232,7 @@ class Recipe:
             "preflight": [asdict(s) for s in self.preflight],
             "availability": asdict(self.availability) if self.availability else None,
             "book": asdict(self.book) if self.book else None,
+            "book_chain": [asdict(s) for s in self.book_chain],
             "slots": asdict(self.slots),
         }
 
@@ -233,6 +257,7 @@ class Recipe:
             preflight=[s for s in (step(x) for x in raw.get("preflight") or []) if s],
             availability=step(raw.get("availability")),
             book=step(raw.get("book")),
+            book_chain=[s for s in (step(x) for x in raw.get("book_chain") or []) if s],
             slots=SlotMapping(**(raw.get("slots") or {})),
             captured_at=raw.get("captured_at", ""),
             source=raw.get("source", ""),

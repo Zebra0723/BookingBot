@@ -184,7 +184,7 @@ python tools/mock_club.py --port 8765 --release-in 60
 The test suite drives the whole pipeline against it:
 
 ```bash
-python -m pytest tests/ -q      # 99 tests
+python -m pytest tests/ -q      # 118 tests
 ```
 
 ---
@@ -202,6 +202,12 @@ arrives as the window opens. Tune `attempts.prefire_ms` for your connection.
 **It will not hammer the club.** Attempts are sequential and stop the moment
 a booking succeeds. Parallel booking requests are deliberately not supported:
 two that both succeed leave you holding two courts.
+
+**Multi-step booking.** Some leisure systems book in stages (add to basket,
+then confirm at checkout). Discovery detects that and records the whole chain,
+wiring each step's output into the next — a basket id created in step one
+reaches the confirmation in step two as a placeholder, not as the stale literal
+it was captured with. Single-request flows are left as one step.
 
 **Fallback.** If the HTTP path is ever blocked (a WAF, a browser-bound token),
 `snipe --browser-fallback` replays the booking through a real browser using the

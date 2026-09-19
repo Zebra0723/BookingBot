@@ -220,36 +220,58 @@ class BookingClient:
         return slots
 
     def book(self, slot: Slot, target: date) -> BookingResult:
-        step = self.recipe.book
-        if step is None:
+        """Run the booking request, or the whole chain if the flow is multi-step.
+
+        A basket-style flow (add -> checkout -> confirm) is only booked once the
+        final step succeeds, so an intermediate failure is reported as a failure
+        and names the step that broke. Values extracted along the way — a basket
+        id, a reservation token — are carried forward to later steps.
+        """
+        steps = self.recipe.booking_steps()
+        if not steps:
             raise RecipeError("recipe has no booking step; re-run discovery")
+
         values = dict(
             self.values,
             date=target.isoformat(),
+            date_iso=target.isoformat(),
             time=slot.start.strftime("%H:%M") if slot.start else "",
             slot_id=slot.slot_id,
             court_id=slot.court,
         )
-        # Anything the booking step still needs may live on the slot itself.
-        for name in step.placeholders():
+        # Anything a booking step still needs may live on the slot itself.
+        wanted = set().union(*(s.placeholders() for s in steps))
+        for name in wanted:
             if name not in values and name in slot.raw:
                 values[name] = slot.raw[name]
 
         if self.dry_run:
-            url, _, body = step.render(values)
-            log.info("DRY RUN — would send %s %s body=%s", step.method, url, body)
+            for step in steps:
+                url, _, body = step.render(values)
+                log.info("DRY RUN — would send %s %s body=%s", step.method, url, body)
             return BookingResult(True, 0, "dry run — nothing was sent", slot)
 
-        resp = self._send(step, values)
-        ok = step.ok(resp.status_code)
+        last: requests.Response | None = None
+        for i, step in enumerate(steps):
+            last = self._send(step, values)
+            if not step.ok(last.status_code):
+                try:
+                    detail = str(last.json())[:300]
+                except ValueError:
+                    detail = last.text[:300]
+                where = f"step {i + 1}/{len(steps)} ({step.name})" if len(steps) > 1 else step.name
+                return BookingResult(
+                    ok=False, status=last.status_code,
+                    detail=f"{where} failed: {detail}", slot=slot,
+                )
+            values.update(self._absorb(step, last))
+
+        assert last is not None
         try:
-            payload = resp.json()
+            payload = last.json()
         except ValueError:
-            payload = resp.text[:500]
+            payload = last.text[:500]
         return BookingResult(
-            ok=ok,
-            status=resp.status_code,
-            detail="booked" if ok else str(payload)[:300],
-            slot=slot,
-            response=payload,
+            ok=True, status=last.status_code, detail="booked",
+            slot=slot, response=payload,
         )

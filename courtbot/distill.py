@@ -335,6 +335,75 @@ def slot_identifier_values(items: list[dict], mapping: SlotMapping) -> dict[str,
     return out
 
 
+def placeholder_name(path: str, taken: set[str]) -> str:
+    """A readable, unique placeholder name derived from a JSON path.
+
+    `data.basketId` becomes `basket_id`. Reserved runtime names are never
+    reused, since shadowing `date` or `slot_id` would silently misdirect the
+    booking request.
+    """
+    leaf = path.split(".")[-1].split("[")[0] or "value"
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", leaf).lower()
+    snake = re.sub(r"[^a-z0-9_]", "_", snake).strip("_") or "value"
+    if snake[0].isdigit():
+        snake = f"v_{snake}"
+    base, n = snake, 2
+    while snake in taken or snake in RESERVED_PLACEHOLDERS:
+        snake = f"{base}_{n}"
+        n += 1
+    return snake
+
+
+RESERVED_PLACEHOLDERS = {
+    "date", "date_iso", "time", "end_time", "slot_id", "court_id",
+    "club_id", "activity_id", "duration", "token", "username", "password",
+}
+
+
+def wire_chain(pairs: list[tuple[Step, Exchange]]) -> list[str]:
+    """Connect a multi-step booking flow.
+
+    Each step after the first may carry a literal — a basket id, a reservation
+    token — that an earlier step's *response* produced. Replayed as captured
+    those literals are stale, so they are replaced with placeholders and the
+    earlier step gains an `extract` that regenerates them at run time.
+
+    Mutates the steps in place; returns notes for the report.
+    """
+    notes: list[str] = []
+    taken: set[str] = set()
+    for i in range(1, len(pairs)):
+        step, _ = pairs[i]
+        for j in range(i):
+            prev_step, prev_ex = pairs[j]
+            resp = prev_ex.json_response
+            if not isinstance(resp, (dict, list)):
+                continue
+            for path, value in _flatten(resp):
+                if not isinstance(value, (str, int)) or isinstance(value, bool):
+                    continue
+                literal = str(value)
+                # Short values match by coincidence ("1", "60"); ignore them.
+                if len(literal) < 6:
+                    continue
+                haystack = step.url + (step.body or "")
+                if literal not in haystack:
+                    continue
+                existing = next(
+                    (n for n, p in prev_step.extract.items() if p == path), None
+                )
+                name = existing or placeholder_name(path, taken)
+                taken.add(name)
+                prev_step.extract[name] = path
+                step.url = step.url.replace(literal, "{%s}" % name)
+                if step.body:
+                    step.body = step.body.replace(literal, "{%s}" % name)
+                notes.append(
+                    f"wired {{{name}}} in `{step.name}` from `{prev_step.name}`.{path}"
+                )
+    return notes
+
+
 @dataclass
 class Distillation:
     recipe: Recipe
@@ -450,7 +519,51 @@ def distill(
         report.append("availability: NOT FOUND — no response looked like a slot list.")
 
     # --- booking ---
-    if scored_book and scored_book[0][0] >= 5:
+    # A booking flow may be one request or several (add to basket, checkout,
+    # confirm). Take every candidate that scores, in the order it happened, and
+    # keep only those after the availability lookup — a POST before the user had
+    # even seen the slots is not part of booking.
+    avail_ex = scored_avail[0][1] if (scored_avail and scored_avail[0][0] >= 4) else None
+    avail_pos = candidates.index(avail_ex) if avail_ex in candidates else -1
+    chain_exchanges = [
+        e for pos, e in enumerate(candidates)
+        if pos > avail_pos and _looks_like_booking(e, booked_date) >= 5
+    ]
+
+    if len(chain_exchanges) > 1:
+        book_subs = [
+            (slot_ids["slot_id"], "slot_id"),
+            (slot_ids["court_id"], "court_id"),
+        ] + subs
+        pairs: list[tuple[Step, Exchange]] = []
+        all_hits: list[str] = []
+        for n, ex in enumerate(chain_exchanges):
+            url, uh = _templatise(ex.url, auth_subs + book_subs)
+            body, bh = _templatise(ex.body, auth_subs + book_subs)
+            all_hits += uh + bh
+            pairs.append((
+                Step(
+                    name=f"book_{n + 1}", method=ex.method.upper(), url=url,
+                    headers=_templatise_headers(_clean_headers(ex.headers), auth_subs),
+                    body=body,
+                    content_type=ex.headers.get("content-type", "application/json"),
+                    notes="part of a multi-step booking flow",
+                ),
+                ex,
+            ))
+        wiring = wire_chain(pairs)
+        recipe.book_chain = [s for s, _ in pairs]
+        report.append(
+            f"booking: {len(pairs)}-step flow — " +
+            " -> ".join(f"{s.method} {_short(s.url, 40)}" for s, _ in pairs)
+        )
+        report.extend(f"  {w}" for w in wiring)
+        if not all_hits:
+            report.append(
+                "  WARNING: neither the date nor the time appears anywhere in the "
+                "booking flow. Check the chain by hand before relying on it."
+            )
+    elif scored_book and scored_book[0][0] >= 5:
         score, ex = scored_book[0]
         # Slot/court identifiers must be templated before date and time: an id
         # such as "2026-09-30-10:00-C3" embeds them, and substituting the date
