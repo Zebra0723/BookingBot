@@ -121,3 +121,27 @@ def test_attempt_policy_rejects_a_non_positive_retry_budget():
 def test_club_rejects_an_unsupported_duration():
     with pytest.raises(ConfigError, match="duration_minutes"):
         Club(name="x", duration_minutes=45)
+
+
+def test_allows_plain_http_only_for_loopback(tmp_path):
+    # The rehearsal harness drives a local mock over HTTP; anything else must
+    # stay on TLS so the membership password is never sent in clear.
+    c = load(write(tmp_path, GOOD + '\nbase_url: "http://127.0.0.1:8765"\n'))
+    assert c.base_url == "http://127.0.0.1:8765"
+    with pytest.raises(ConfigError, match="password in clear"):
+        load(write(tmp_path, GOOD + '\nbase_url: "http://api.example.com"\n'))
+
+
+def test_release_time_accepts_optional_seconds(tmp_path):
+    # `calibrate` measures a release to the second; rounding it away would
+    # reintroduce the lateness the measurement was taken to remove.
+    c = load(write(tmp_path, GOOD.replace('"08:00"', '"07:30:15"')))
+    assert c.window.release_time == time(7, 30, 15)
+    plain = load(write(tmp_path, GOOD))
+    assert plain.window.release_time == time(8, 0, 0)
+
+
+def test_release_time_still_rejects_nonsense(tmp_path):
+    for bad in ('"08:00:99"', '"08"', '"eight"'):
+        with pytest.raises(ConfigError, match="24-hour time"):
+            load(write(tmp_path, GOOD.replace('"08:00"', bad)))

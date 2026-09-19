@@ -246,9 +246,19 @@ class BookingClient:
                 values[name] = slot.raw[name]
 
         if self.dry_run:
-            for step in steps:
-                url, _, body = step.render(values)
-                log.info("DRY RUN — would send %s %s body=%s", step.method, url, body)
+            # In a chained flow a later step needs a value an earlier step's
+            # *response* produces — a basket id, a reservation token. Nothing is
+            # sent during a dry run, so those never arrive; stand in a readable
+            # marker for each rather than failing on an unresolved placeholder.
+            preview = dict(values)
+            for i, step in enumerate(steps):
+                for name in step.extract:
+                    preview.setdefault(name, f"<{name} from step {i + 1}>")
+            for i, step in enumerate(steps):
+                url, _, body = step.render(preview)
+                where = f"step {i + 1}/{len(steps)} " if len(steps) > 1 else ""
+                log.info("DRY RUN — would send %s%s %s body=%s",
+                         where, step.method, url, body)
             return BookingResult(True, 0, "dry run — nothing was sent", slot)
 
         last: requests.Response | None = None

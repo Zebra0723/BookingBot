@@ -184,8 +184,20 @@ python tools/mock_club.py --port 8765 --release-in 60
 The test suite drives the whole pipeline against it:
 
 ```bash
-python -m pytest tests/ -q      # 118 tests
+python -m pytest tests/ -q      # 122 tests
 ```
+
+And a dress rehearsal drives the **real CLI** — the same commands you will
+type, as subprocesses, with the same config file and exit codes:
+
+```bash
+python tools/rehearse.py            # single-request booking flow
+python tools/rehearse.py --basket   # two-step basket flow
+```
+
+It runs two rounds against fresh mock clubs: a dry run that must leave the club
+untouched, then a live run that must produce a confirmed booking. Worth running
+before your first real 08:00.
 
 ---
 

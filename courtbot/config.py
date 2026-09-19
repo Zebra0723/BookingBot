@@ -24,7 +24,9 @@ WEEKDAYS = {
     "friday": 4, "saturday": 5, "sunday": 6,
 }
 
-_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+# Seconds are optional. Clubs release on the minute, but accepting seconds lets
+# `calibrate` record a measured release exactly rather than rounding it away.
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$")
 
 # Keys that must never be committed to the config file.
 _FORBIDDEN_KEYS = {"password", "passwd", "secret", "token", "pin"}
@@ -35,10 +37,13 @@ class ConfigError(ValueError):
 
 
 def _parse_time(raw: object, where: str) -> time:
-    if not isinstance(raw, str) or not _TIME_RE.match(raw.strip()):
-        raise ConfigError(f"{where}: expected a 24-hour time like '08:00', got {raw!r}")
-    hh, mm = raw.strip().split(":")
-    return time(int(hh), int(mm))
+    match = _TIME_RE.match(raw.strip()) if isinstance(raw, str) else None
+    if not match:
+        raise ConfigError(
+            f"{where}: expected a 24-hour time like '08:00' or '08:00:30', got {raw!r}"
+        )
+    hh, mm, ss = match.groups()
+    return time(int(hh), int(mm), int(ss or 0))
 
 
 @dataclass(frozen=True)
@@ -224,7 +229,15 @@ def load(path: str | Path) -> Config:
 
     base_url = str(raw.get("base_url", "")).strip().rstrip("/")
     if base_url and not base_url.startswith("https://"):
-        raise ConfigError("base_url must be https://")
+        # Plain HTTP would put the membership password on the wire in clear.
+        # The one exception is a loopback address, which is how the rehearsal
+        # harness and the mock club are driven.
+        host = base_url.split("://", 1)[-1].split("/")[0].split(":")[0]
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ConfigError(
+                f"base_url must be https:// (got {base_url!r}) — plain HTTP would "
+                f"send your password in clear"
+            )
 
     return Config(
         club=club,

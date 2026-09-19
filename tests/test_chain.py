@@ -194,3 +194,19 @@ def test_books_through_the_basket_flow_at_release(monkeypatch):
                    for b in state.booking_log)
     finally:
         server.shutdown()
+
+
+def test_a_dry_run_of_a_chain_does_not_fail_on_unresolved_values(chain_recipe, monkeypatch):
+    """Regression: step 2 needs a basket id that only step 1's response makes.
+
+    A dry run sends nothing, so that value never arrives. Rendering must stand
+    in a marker rather than raising on the unresolved placeholder — otherwise
+    `snipe --dry-run` is broken for every basket-style club.
+    """
+    from courtbot.http_client import BookingClient, Slot
+
+    client = BookingClient(chain_recipe.recipe, dry_run=True)
+    slot = Slot(start=time(10, 0), court="Court 3", slot_id="s-99", available=True)
+    result = client.book(slot, BOOKED)
+    assert result.ok
+    assert "nothing was sent" in result.detail
